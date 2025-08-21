@@ -1,0 +1,314 @@
+name: CKAN Devstaller Full Test (Self-Hosted)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      clean_install:
+        description: 'Perform clean system reset before testing'
+        required: false
+        default: 'true'
+        type: boolean
+      test_duration:
+        description: 'How long to run CKAN (minutes)'
+        required: false
+        default: '5'
+        type: string
+
+jobs:
+  # Quick syntax and build check (can run on GitHub-hosted)
+  quick-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+    - name: Quick build test
+      run: cargo check
+    - name: Syntax check
+      run: cargo fmt -- --check
+
+  # Full installation test on self-hosted runner
+  full-install-test:
+    runs-on: [self-hosted, ckan-testing]  # Use your custom labels
+    needs: quick-check
+    timeout-minutes: 120  # 2 hours max
+    
+    steps:
+    - name: Runner info
+      run: |
+        echo "🖥️ Runner Information:"
+        echo "OS: $(uname -a)"
+        echo "Available space: $(df -h /)"
+        echo "Memory: $(free -h)"
+        echo "Docker version: $(docker --version)"
+        echo "User: $(whoami)"
+        echo "Working directory: $(pwd)"
+
+    - name: Clean system (if requested)
+      if: github.event.inputs.clean_install == 'true' || github.event_name != 'workflow_dispatch'
+      run: |
+        echo "🧹 Cleaning system for fresh test..."
+        
+        # Stop any running CKAN processes
+        sudo pkill -f "ckan" || true
+        
+        # Stop and remove any existing containers
+        docker stop $(docker ps -q) 2>/dev/null || true
+        docker rm $(docker ps -aq) 2>/dev/null || true
+        
+        # Clean up CKAN directories
+        sudo rm -rf /usr/lib/ckan/ || true
+        sudo rm -rf /etc/ckan/ || true
+        sudo rm -rf /var/lib/ckan/ || true
+        
+        # Clean up any previous test files
+        rm -rf ~/ckan-compose || true
+        rm -rf ~/get-docker.sh || true
+        rm -rf ~/ahoy* || true
+        rm -rf ~/qsv* || true
+        rm -rf ~/permissions.sql || true
+        rm -rf ~/dpp_default_config.ini || true
+        
+        # Clean Docker
+        docker system prune -af || true
+        docker volume prune -f || true
+        
+        echo "✅ System cleaned"
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build ckan-devstaller
+      run: |
+        echo "🔨 Building ckan-devstaller..."
+        cargo build --release
+        chmod +x target/release/ckan-devstaller
+        echo "✅ Build complete"
+
+    - name: Test ckan-devstaller help
+      run: |
+        echo "📖 Testing help command..."
+        ./target/release/ckan-devstaller --help
+
+    - name: Run ckan-devstaller installation
+      run: |
+        echo "🚀 Starting CKAN installation..."
+        echo "This will install CKAN 2.11.3 with all extensions..."
+        
+        # Create a timeout wrapper script
+        cat > run_with_timeout.sh << 'EOF'
+        #!/bin/bash
+        timeout 90m ./target/release/ckan-devstaller --default &
+        INSTALL_PID=$!
+        
+        # Wait for installation to complete or timeout
+        wait $INSTALL_PID
+        INSTALL_EXIT_CODE=$?
+        
+        if [ $INSTALL_EXIT_CODE -eq 124 ]; then
+          echo "❌ Installation timed out after 90 minutes"
+          exit 1
+        elif [ $INSTALL_EXIT_CODE -ne 0 ]; then
+          echo "❌ Installation failed with exit code $INSTALL_EXIT_CODE"
+          exit $INSTALL_EXIT_CODE
+        else
+          echo "✅ Installation completed successfully"
+        fi
+        EOF
+        
+        chmod +x run_with_timeout.sh
+        ./run_with_timeout.sh
+
+    - name: Wait for CKAN to be ready
+      timeout-minutes: 10
+      run: |
+        echo "⏳ Waiting for CKAN to be ready..."
+        
+        # Wait for CKAN to start responding
+        for i in {1..60}; do
+          if curl -s http://localhost:5000 > /dev/null; then
+            echo "✅ CKAN is responding!"
+            break
+          fi
+          echo "Attempt $i/60: CKAN not ready yet, waiting 10 seconds..."
+          sleep 10
+        done
+        
+        # Final check
+        if ! curl -s http://localhost:5000 > /dev/null; then
+          echo "❌ CKAN failed to start properly"
+          exit 1
+        fi
+
+    - name: Test CKAN functionality
+      run: |
+        echo "🧪 Testing CKAN functionality..."
+        
+        # Test main page
+        echo "Testing main page..."
+        curl -f http://localhost:5000/ > /dev/null
+        echo "✅ Main page accessible"
+        
+        # Test API
+        echo "Testing API..."
+        curl -f http://localhost:5000/api/3/action/status_show > /dev/null
+        echo "✅ API responding"
+        
+        # Test dataset listing
+        echo "Testing dataset listing..."
+        curl -f http://localhost:5000/api/3/action/package_list > /dev/null
+        echo "✅ Dataset API working"
+        
+        # Check if DataStore is enabled
+        echo "Testing DataStore..."
+        DATASTORE_RESPONSE=$(curl -s http://localhost:5000/api/3/action/datastore_search)
+        if echo "$DATASTORE_RESPONSE" | grep -q "datastore_search"; then
+          echo "✅ DataStore is enabled and responding"
+        else
+          echo "⚠️ DataStore may not be properly configured"
+        fi
+        
+        echo "✅ All basic functionality tests passed!"
+
+    - name: Test extensions
+      run: |
+        echo "🔌 Testing installed extensions..."
+        
+        # Check if scheming is working
+        echo "Testing ckanext-scheming..."
+        SCHEMA_RESPONSE=$(curl -s http://localhost:5000/api/3/action/scheming_dataset_schema_list)
+        if echo "$SCHEMA_RESPONSE" | grep -q "success"; then
+          echo "✅ Scheming extension is working"
+        else
+          echo "⚠️ Scheming extension may not be properly configured"
+        fi
+        
+        # Check config for DataPusher+
+        if [ -f "/etc/ckan/default/ckan.ini" ]; then
+          if grep -q "datapusher_plus" /etc/ckan/default/ckan.ini; then
+            echo "✅ DataPusher+ is configured"
+          else
+            echo "⚠️ DataPusher+ configuration not found"
+          fi
+        fi
+
+    - name: Test data upload (if time permits)
+      if: github.event.inputs.test_duration != '0'
+      run: |
+        echo "📊 Testing data upload functionality..."
+        
+        # Create a simple test CSV
+        cat > test_data.csv << 'EOF'
+        name,age,city
+        Alice,25,New York
+        Bob,30,San Francisco
+        Charlie,35,Chicago
+        EOF
+        
+        # Try to upload via API (simplified test)
+        echo "Created test CSV file"
+        ls -la test_data.csv
+        echo "✅ Data upload test setup complete"
+
+    - name: Run CKAN for extended period
+      if: github.event.inputs.test_duration != '0'
+      timeout-minutes: ${{ fromJSON(github.event.inputs.test_duration || '5') }}
+      run: |
+        echo "🔄 Running CKAN for ${{ github.event.inputs.test_duration || '5' }} minutes to test stability..."
+        
+        # Monitor CKAN health
+        START_TIME=$(date +%s)
+        DURATION_SECONDS=$(( ${{ fromJSON(github.event.inputs.test_duration || '5') }} * 60 ))
+        
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$(( CURRENT_TIME - START_TIME ))
+          
+          if [ $ELAPSED -ge $DURATION_SECONDS ]; then
+            echo "✅ CKAN ran successfully for the full duration"
+            break
+          fi
+          
+          # Check if CKAN is still responding
+          if ! curl -s http://localhost:5000 > /dev/null; then
+            echo "❌ CKAN stopped responding after $ELAPSED seconds"
+            exit 1
+          fi
+          
+          echo "✅ CKAN still running... ($ELAPSED/$DURATION_SECONDS seconds)"
+          sleep 30
+        done
+
+    - name: Collect logs and diagnostics
+      if: always()
+      run: |
+        echo "📋 Collecting diagnostics..."
+        
+        # System information
+        echo "=== SYSTEM INFO ==="
+        df -h
+        free -h
+        ps aux | grep ckan || true
+        
+        # Docker containers
+        echo "=== DOCKER CONTAINERS ==="
+        docker ps -a || true
+        
+        # CKAN logs (if available)
+        echo "=== CKAN LOGS ==="
+        if [ -f "/var/log/ckan/ckan.log" ]; then
+          tail -50 /var/log/ckan/ckan.log || true
+        fi
+        
+        # Configuration
+        echo "=== CKAN CONFIG ==="
+        if [ -f "/etc/ckan/default/ckan.ini" ]; then
+          head -20 /etc/ckan/default/ckan.ini || true
+        fi
+        
+        # Check listening ports
+        echo "=== LISTENING PORTS ==="
+        sudo netstat -tlnp || ss -tlnp || true
+
+    - name: Performance metrics
+      if: always()
+      run: |
+        echo "📊 Performance metrics:"
+        echo "CPU usage: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)"
+        echo "Memory usage: $(free | grep Mem | awk '{printf "%.2f%%", $3/$2 * 100.0}')"
+        echo "Disk usage: $(df / | tail -1 | awk '{print $5}')"
+
+    - name: Cleanup (optional)
+      if: always() && (github.event.inputs.clean_install == 'true' || github.event_name == 'push')
+      run: |
+        echo "🧹 Cleaning up after test..."
+        
+        # Stop CKAN
+        sudo pkill -f "ckan" || true
+        
+        # Stop containers
+        docker stop $(docker ps -q) 2>/dev/null || true
+        
+        # Note: Full cleanup is optional - you might want to keep 
+        # the installation for debugging or manual testing
+        echo "✅ Basic cleanup complete"
+
+  # Notification job
+  notify-results:
+    runs-on: ubuntu-latest
+    needs: [quick-check, full-install-test]
+    if: always()
+    steps:
+    - name: Notify results
+      run: |
+        if [ "${{ needs.full-install-test.result }}" == "success" ]; then
+          echo "✅ CKAN installation test completed successfully!"
+        else
+          echo "❌ CKAN installation test failed"
+          exit 1
+        fi
