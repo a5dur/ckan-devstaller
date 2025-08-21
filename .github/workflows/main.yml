@@ -34,7 +34,7 @@ jobs:
 
   # Full installation test on self-hosted runner
   full-install-test:
-    runs-on: [self-hosted, ckan-testing]  # Use your custom labels
+    runs-on: self-hosted  # Simple: runs on any self-hosted runner
     needs: quick-check
     timeout-minutes: 120  # 2 hours max
     
