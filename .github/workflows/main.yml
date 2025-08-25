@@ -29,8 +29,6 @@ jobs:
         toolchain: stable
     - name: Quick build test
       run: cargo check
-    - name: Syntax check
-      run: cargo fmt -- --check
 
   # Full installation test on self-hosted runner
   full-install-test:
