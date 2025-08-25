@@ -1,0 +1,141 @@
+name: CKAN Simple Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      expose_url:
+        description: 'Expose CKAN instance publicly'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  run-ckan:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust (for building from source)
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Build ckan-devstaller
+      run: |
+        cargo build --release
+        sudo cp target/release/ckan-devstaller /usr/local/bin/
+        sudo chmod +x /usr/local/bin/ckan-devstaller
+
+    - name: Run ckan-devstaller with modifications
+      run: |
+        # Modify the installer to not run CKAN at the end (we'll do it separately)
+        # Create a wrapper script that stops before the final run command
+        cat > run_installer.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        # Run all setup steps except the final CKAN run
+        sudo apt update -y
+        sudo apt upgrade -y
+        sudo apt install curl openssh-server -y
+        
+        # Install Docker
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh
+        
+        # Install Docker Compose
+        sudo apt install docker-compose -y
+        
+        # Install Ahoy
+        cd ~/
+        sudo curl -LO https://github.com/ahoy-cli/ahoy/releases/download/v2.1.2/ahoy-bin-linux-amd64
+        sudo mv ahoy-bin-linux-amd64 ahoy
+        sudo chmod +x ahoy
+        
+        # Setup ckan-compose
+        git clone https://github.com/tino097/ckan-compose.git
+        cd ckan-compose
+        git switch solr-9-impl
+        
+        cat > .env << ENVEOF
+        PROJECT_NAME=ckan-actions
+        DATASTORE_READONLY_PASSWORD=pass
+        POSTGRES_PASSWORD=pass
+        ENVEOF
+        
+        sudo ~/ahoy up -d
+        
+        # Wait for containers
+        sleep 30
+        
+        # Now run the ckan-devstaller for the rest
+        echo "yes" | ckan-devstaller --default || true
+        EOF
+        
+        chmod +x run_installer.sh
+        
+        # Run the modified installer
+        timeout 1800 ./run_installer.sh || true
+
+    - name: Start CKAN in background
+      run: |
+        source /usr/lib/ckan/default/bin/activate
+        
+        # Start CKAN
+        nohup ckan -c /etc/ckan/default/ckan.ini run --host 0.0.0.0 > ckan.log 2>&1 &
+        echo $! > ckan.pid
+        
+        # Wait for startup
+        sleep 15
+        
+        # Check if running
+        curl -f http://localhost:5000 || (cat ckan.log && exit 1)
+
+    - name: Expose with ngrok
+      if: ${{ github.event.inputs.expose_url }}
+      run: |
+        # Install ngrok
+        wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
+        unzip ngrok-stable-linux-amd64.zip
+        
+        # Start ngrok
+        ./ngrok http 5000 > /dev/null 2>&1 &
+        sleep 5
+        
+        # Get public URL
+        NGROK_URL=$(curl -s localhost:4040/api/tunnels | python3 -c "import sys, json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])")
+        
+        echo "========================================="
+        echo "🚀 CKAN Instance is running!"
+        echo "========================================="
+        echo "Public URL: $NGROK_URL"
+        echo "Local URL: http://localhost:5000"
+        echo "Admin Username: runner"
+        echo "Admin Password: password"
+        echo "========================================="
+        
+        # Add to summary
+        echo "## CKAN Instance" >> $GITHUB_STEP_SUMMARY
+        echo "**URL**: $NGROK_URL" >> $GITHUB_STEP_SUMMARY
+        echo "**Admin**: runner / password" >> $GITHUB_STEP_SUMMARY
+
+    - name: Keep alive for testing
+      run: |
+        # Keep running for 30 minutes for testing
+        echo "Instance will stay active for 30 minutes..."
+        sleep 1800
+
+    - name: Cleanup
+      if: always()
+      run: |
+        # Kill CKAN
+        if [ -f ckan.pid ]; then
+          kill $(cat ckan.pid) || true
+        fi
+        
+        # Stop containers
+        cd ~/ckan-compose && sudo ~/ahoy down || true
