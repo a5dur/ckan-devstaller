@@ -385,7 +385,7 @@ fn main() -> Result<()> {
             "ckan config-tool /etc/ckan/default/ckan.ini -s app:main ckan.plugins={ckan_plugins}"
         )
         .run()?;
-            cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main scheming.dataset_schemas=ckanext.datapusher_plus:dataset-druf.yaml").run()?;
+            //cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main scheming.dataset_schemas=ckanext.datapusher_plus:dataset-druf.yaml").run()?;
             // app_main_section.insert("ckan.plugins", ckan_plugins);
             // app_main_section.insert(
             //     "scheming.dataset_schemas",
