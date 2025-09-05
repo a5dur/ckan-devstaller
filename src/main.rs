@@ -372,7 +372,7 @@ fn main() -> Result<()> {
             sh.change_dir(format!("/home/{username}"));
             cmd!(sh, "wget https://github.com/dathere/qsv/releases/download/4.0.0/qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
             cmd!(sh, "sudo apt install unzip -y").run()?;
-            cmd!(sh, "unzip qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
+            cmd!(sh, "unzip -o qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
             cmd!(sh, "sudo rm -rf qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
             //cmd!(sh, "sudo mv ./qsvdp_glibc-2.31 /usr/local/bin/qsvdp").run()?;
             cmd!(sh, "sudo mv ./qsvdp /usr/local/bin/qsvdp").run()?;
