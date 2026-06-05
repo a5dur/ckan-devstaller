@@ -229,7 +229,7 @@ fn main() -> Result<()> {
         venv.pip_upgrade("pip")?;
         venv.pip_install(
             format!(
-                "git+https://github.com/ckan/ckan.git@ckan-{}#egg=ckan[requirements]",
+                "ckan[requirements] @ git+https://github.com/ckan/ckan.git@ckan-{}",
                 config.ckan_version
             )
             .as_str(),
@@ -337,7 +337,7 @@ fn main() -> Result<()> {
             );
             cmd!(
             sh,
-            "pip install -e git+https://github.com/ckan/ckanext-scheming.git#egg=ckanext-scheming"
+            "pip install -e ckanext-scheming @ git+https://github.com/ckan/ckanext-scheming.git"
         )
         .run()?;
             let mut conf = ini::Ini::load_from_file("/etc/ckan/default/ckan.ini")?;

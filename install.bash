@@ -21,7 +21,7 @@ sudo chmod +x ./ckan-devstaller
 # Otherwise run ckan-devstaller in interactive mode
 flag=$1
 
-if [ $flag == "default" ]; then
+if [ "$flag" == "default" ]; then
     ./ckan-devstaller --default
 else
     ./ckan-devstaller

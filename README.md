@@ -36,6 +36,44 @@ wget -O - https://github.com/dathere/ckan-devstaller/releases/download/0.2.0/ins
 wget -O - https://github.com/dathere/ckan-devstaller/releases/download/0.2.0/install.bash | bash
 ```
 
+## Deployment (build from source)
+
+Use this path when the release binary does not match your architecture (e.g. ARM / Apple Silicon).
+
+### Prerequisites
+
+- Ubuntu 22.04 (fresh instance)
+- Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
+### Build and run
+
+```bash
+git clone https://github.com/dathere/ckan-devstaller.git
+cd ckan-devstaller
+cargo build --release
+./target/release/ckan-devstaller
+```
+
+Pass `--default` for non-interactive mode:
+
+```bash
+./target/release/ckan-devstaller --default
+```
+
+### Add a sysadmin after install
+
+```bash
+/usr/lib/ckan/default/bin/ckan -c /etc/ckan/default/ckan.ini user add <username> email=<email> password=<password>
+/usr/lib/ckan/default/bin/ckan -c /etc/ckan/default/ckan.ini sysadmin add <username>
+```
+
+CKAN will be available at `http://localhost:5000`.
+
 ## Demos
 
 ### Interactive customizable installation
