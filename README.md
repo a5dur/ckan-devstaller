@@ -19,6 +19,9 @@
 > [!NOTE]  
 > The `/etc/ckan/default/ckan.ini` config file will have its comments removed for now. There are plans to fix this in a future release of `ckan-devstaller`.
 
+> [!NOTE]  
+> Currently `ckan-devstaller` supports x86 architecture. ARM support is planned.
+
 You have two common options to choose from for installation. Paste one of the following scripts into your new Ubuntu 22.04 instance's terminal.
 
 ### Install with non-interactive mode (default config)
@@ -32,6 +35,44 @@ wget -O - https://github.com/dathere/ckan-devstaller/releases/download/0.2.0/ins
 ```bash
 wget -O - https://github.com/dathere/ckan-devstaller/releases/download/0.2.0/install.bash | bash
 ```
+
+## Deployment (build from source)
+
+Use this path when the release binary does not match your architecture (e.g. ARM / Apple Silicon).
+
+### Prerequisites
+
+- Ubuntu 22.04 (fresh instance)
+- Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
+### Build and run
+
+```bash
+git clone https://github.com/dathere/ckan-devstaller.git
+cd ckan-devstaller
+cargo build --release
+./target/release/ckan-devstaller
+```
+
+Pass `--default` for non-interactive mode:
+
+```bash
+./target/release/ckan-devstaller --default
+```
+
+### Add a sysadmin after install
+
+```bash
+/usr/lib/ckan/default/bin/ckan -c /etc/ckan/default/ckan.ini user add <username> email=<email> password=<password>
+/usr/lib/ckan/default/bin/ckan -c /etc/ckan/default/ckan.ini sysadmin add <username>
+```
+
+CKAN will be available at `http://localhost:5000`.
 
 ## Demos
 
