@@ -49,7 +49,11 @@ fn main() -> Result<()> {
 
     // Set up default config
     let sh = Shell::new()?;
-    let username = cmd!(sh, "whoami").read()?;
+    sh.set_var("DEBIAN_FRONTEND", "noninteractive");
+    // When run under sudo, whoami returns "root" and /home/root won't exist.
+    // SUDO_USER holds the original user; fall back to whoami only if not sudo.
+    let username = std::env::var("SUDO_USER")
+        .unwrap_or_else(|_| cmd!(sh, "whoami").read().expect("failed to get username"));
     steps::step_intro();
 
     let default_config_text = r#"
@@ -255,19 +259,13 @@ fn main() -> Result<()> {
         cmd!(sh, "sudo mkdir -p ckan/default").run()?;
         cmd!(sh, "sudo chown {username}.{username} ckan/default").run()?;
         cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini db init").run()?;
-        let sysadmin_username = config.sysadmin.username;
-        let sysadmin_password = config.sysadmin.password;
-        let sysadmin_email = config.sysadmin.email;
+        let sysadmin_username = &config.sysadmin.username;
+        let sysadmin_password = &config.sysadmin.password;
+        let sysadmin_email = &config.sysadmin.email;
         let existing_users = cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini user list").read()?;
         println!("Existing users: {}", existing_users);
-        //cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini user remove existing_users").run().ok();
-        //cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini search-index clear").run().ok();
-        //cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini user add admin_ckan password=password email=admin@local").run()?;
-        //cmd!(
-        //    sh,
-        //    "ckan -c /etc/ckan/default/ckan.ini sysadmin add admin_ckan"
-        //)
-        //.run()?;
+        cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini user add {sysadmin_username} password={sysadmin_password} email={sysadmin_email}").run()?;
+        cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini sysadmin add {sysadmin_username}").run()?;
         println!(
             "{}",
             success_text(format!("✅ 6. Installed CKAN {}.", config.ckan_version).as_str())
@@ -335,11 +333,7 @@ fn main() -> Result<()> {
                 "{}",
                 step_text("\n{} Installing ckanext-scheming and DataPusher+ extensions..."),
             );
-            cmd!(
-            sh,
-            "pip install -e ckanext-scheming @ git+https://github.com/ckan/ckanext-scheming.git"
-        )
-        .run()?;
+            cmd!(sh, "pip install ckanext-scheming@git+https://github.com/ckan/ckanext-scheming.git").run()?;
             let mut conf = ini::Ini::load_from_file("/etc/ckan/default/ckan.ini")?;
             let app_main_section = conf.section_mut(Some("app:main")).unwrap();
             let mut ckan_plugins = app_main_section.get("ckan.plugins").unwrap().to_string();
@@ -356,24 +350,15 @@ fn main() -> Result<()> {
             // app_main_section.insert("scheming.dataset_fallback", "false");
             // conf.write_to_file("/etc/ckan/default/ckan.ini")?;
             // Install DataPusher+
-            cmd!(sh, "sudo apt install python3-virtualenv python3-dev python3-pip python3-wheel build-essential libxslt1-dev libxml2-dev zlib1g-dev git libffi-dev libpq-dev uchardet -y").run()?;
+            // libgdal-dev libproj-dev libgeos-dev: required for fiona/pyproj/shapely source builds on aarch64
+            cmd!(sh, "sudo apt install python3-virtualenv python3-dev python3-pip python3-wheel build-essential libxslt1-dev libxml2-dev zlib1g-dev git libffi-dev libpq-dev uchardet libgdal-dev libproj-dev libgeos-dev -y").run()?;
             sh.change_dir("/usr/lib/ckan/default/src");
-            // Install GDAL dependencies
-            //cmd!(sh, "sudo apt install -y gdal-bin libgdal-dev libproj-dev libgeos-dev python3-gdal").run()?;
-            
-            // Get GDAL version and export it
-            //let gdal_version_output = cmd!(sh, "gdal-config --version").read()?;
-            //let gdal_version = gdal_version_output.trim();
-            
-            // Install with explicit GDAL version
-            cmd!(sh, "pip install -e git+https://github.com/dathere/datapusher-plus.git@2.0.0#egg=datapusher-plus").run()?;
-            sh.change_dir("/usr/lib/ckan/default/src/datapusher-plus");
-            cmd!(sh, "pip install -r requirements.txt").run()?;
+            cmd!(sh, "pip install datapusher-plus@git+https://github.com/dathere/datapusher-plus.git@3.1.0-alpha").run()?;
             sh.change_dir(format!("/home/{username}"));
-            cmd!(sh, "wget https://github.com/dathere/qsv/releases/download/4.0.0/qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
+            cmd!(sh, "wget https://github.com/dathere/qsv/releases/download/20.1.0/qsv-20.1.0-aarch64-unknown-linux-gnu.zip").run()?;
             cmd!(sh, "sudo apt install unzip -y").run()?;
-            cmd!(sh, "unzip -qo qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
-            cmd!(sh, "sudo rm -rf qsv-4.0.0-aarch64-unknown-linux-gnu.zip").run()?;
+            cmd!(sh, "unzip -qo qsv-20.1.0-aarch64-unknown-linux-gnu.zip").run()?;
+            cmd!(sh, "sudo rm -rf qsv-20.1.0-aarch64-unknown-linux-gnu.zip").run()?;
             //cmd!(sh, "sudo mv ./qsvdp_glibc-2.31 /usr/local/bin/qsvdp").run()?;
             cmd!(sh, "sudo mv ./qsvdp /usr/local/bin/qsvdp").run()?;
             let mut conf = ini::Ini::load_from_file("/etc/ckan/default/ckan.ini")?;
@@ -394,9 +379,8 @@ fn main() -> Result<()> {
             // conf.write_to_file("/etc/ckan/default/ckan.ini")?;
             let dpp_default_config = r#"
 ckanext.datapusher_plus.use_proxy = false
-ckanext.datapusher_plus.download_proxy = 
+ckanext.datapusher_plus.download_proxy =
 ckanext.datapusher_plus.ssl_verify = false
-# supports INFO, DEBUG, TRACE - use DEBUG or TRACE when debugging scheming Formulas
 ckanext.datapusher_plus.upload_log_level = INFO
 ckanext.datapusher_plus.formats = csv tsv tab ssv xls xlsx xlsxb xlsm ods geojson shp qgis zip
 ckanext.datapusher_plus.pii_screening = false
@@ -405,20 +389,24 @@ ckanext.datapusher_plus.pii_regex_resource_id_or_alias =
 ckanext.datapusher_plus.pii_show_candidates = false
 ckanext.datapusher_plus.pii_quick_screen = false
 ckanext.datapusher_plus.qsv_bin = /usr/local/bin/qsvdp
-ckanext.datapusher_plus.preview_rows = 100
+ckanext.datapusher_plus.qsv_command_timeout = 1800
+ckanext.datapusher_plus.preview_rows = 0
 ckanext.datapusher_plus.download_timeout = 300
 ckanext.datapusher_plus.max_content_length = 1256000000000
-ckanext.datapusher_plus.chunk_size = 16384
+ckanext.datapusher_plus.chunk_size = 1048576
 ckanext.datapusher_plus.default_excel_sheet = 0
 ckanext.datapusher_plus.sort_and_dupe_check = true
 ckanext.datapusher_plus.dedup = false
 ckanext.datapusher_plus.unsafe_prefix = unsafe_
 ckanext.datapusher_plus.reserved_colnames = _id
 ckanext.datapusher_plus.prefer_dmy = false
-ckanext.datapusher_plus.ignore_file_hash = true
-ckanext.datapusher_plus.auto_index_threshold = 3
+ckanext.datapusher_plus.ignore_file_hash = false
+ckanext.datapusher_plus.file_hash_algorithm = blake3
+ckanext.datapusher_plus.auto_index_threshold = 10
+ckanext.datapusher_plus.auto_index_min_threshold = 3
 ckanext.datapusher_plus.auto_index_dates = true
 ckanext.datapusher_plus.auto_unique_index = true
+ckanext.datapusher_plus.use_truncate_freeze = true
 ckanext.datapusher_plus.summary_stats_options =
 ckanext.datapusher_plus.add_summary_stats_resource = false
 ckanext.datapusher_plus.summary_stats_with_preview = false
@@ -429,17 +417,23 @@ ckanext.datapusher_plus.auto_alias = true
 ckanext.datapusher_plus.auto_alias_unique = false
 ckanext.datapusher_plus.copy_readbuffer_size = 1048576
 ckanext.datapusher_plus.type_mapping = {"String": "text", "Integer": "numeric","Float": "numeric","DateTime": "timestamp","Date": "date","NULL": "text"}
-ckanext.datapusher_plus.auto_spatial_simplication = true
-ckanext.datapusher_plus.spatial_simplication_relative_tolerance = 0.1
+ckanext.datapusher_plus.auto_spatial_simplification = true
+ckanext.datapusher_plus.spatial_simplification_relative_tolerance = 0.1
+ckanext.datapusher_plus.auto_csv_spatial_extent = true
 ckanext.datapusher_plus.latitude_fields = latitude,lat
 ckanext.datapusher_plus.longitude_fields = longitude,long,lon
-ckanext.datapusher_plus.jinja2_bytecode_cache_dir = /tmp/jinja2_butecode_cache
+ckanext.datapusher_plus.jinja2_bytecode_cache_dir = /tmp/jinja2_bytecode_cache
 ckanext.datapusher_plus.auto_unzip_one_file = true
+ckanext.datapusher_plus.enable_ai_suggestions = false
 ckanext.datapusher_plus.api_token = <CKAN service account token for CKAN user with sysadmin privileges>
-ckanext.datapusher_plus.describeGPT_api_key = <Token for OpenAI API compatible service>
 ckanext.datapusher_plus.file_bin = /usr/bin/file
 ckanext.datapusher_plus.enable_druf = false
 ckanext.datapusher_plus.enable_form_redirect = true
+ckanext.datapusher_plus.prefect_work_pool = datapusher-plus
+ckanext.datapusher_plus.prefect_deployment_name = datapusher-plus/datapusher-plus
+ckanext.datapusher_plus.prefect_ui_base = http://localhost:4200
+ckanext.datapusher_plus.default_locale =
+ckanext.datapusher_plus.decimal_separator =
 "#;
             
             let dpp_config_path = format!("/home/{username}/dpp_default_config.ini");
@@ -449,6 +443,8 @@ ckanext.datapusher_plus.enable_form_redirect = true
                 "ckan config-tool /etc/ckan/default/ckan.ini -f {dpp_config_path}"
             )
             .run()?;
+            let druf_value = if config.druf_mode { "true" } else { "false" };
+            cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini ckanext.datapusher_plus.enable_druf={druf_value}").run()?;
             
             let resource_formats_str = std::fs::read_to_string(
                 "/usr/lib/ckan/default/src/ckan/config/resource_formats.json",
@@ -485,6 +481,56 @@ ckanext.datapusher_plus.enable_form_redirect = true
                 "ckan -c /etc/ckan/default/ckan.ini db upgrade -p datapusher_plus"
             )
             .run()?;
+            // Start Prefect postgres + server only; worker runs on host in CKAN venv (not in Docker,
+            // because the Docker image has no access to /usr/lib/ckan/default or ckan.ini).
+            // Write compose file inline — DPP installed non-editable so no source dir exists.
+            let prefect_compose = r#"services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefect
+      POSTGRES_DB: prefect
+    volumes:
+      - prefect-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prefect"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:prefect@postgres:5432/prefect
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_SERVER_UI_API_URL: http://localhost:4200/api
+    command: prefect server start
+    ports:
+      - "4200:4200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:4200/api/health', timeout=1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+volumes:
+  prefect-postgres:
+"#;
+            let prefect_compose_path = format!("/home/{username}/docker-compose.prefect.yaml");
+            std::fs::write(&prefect_compose_path, prefect_compose)?;
+            sh.change_dir(format!("/home/{username}"));
+            cmd!(sh, "sudo docker-compose -f docker-compose.prefect.yaml up -d postgres prefect-server").run()?;
+            // Wait up to 60s for Prefect server health
+            cmd!(sh, "bash -c 'for i in $(seq 1 12); do curl -sf http://localhost:4200/api/health > /dev/null && break; sleep 5; done'").run()?;
+            cmd!(sh, "bash -c '. /usr/lib/ckan/default/bin/activate && PREFECT_API_URL=http://localhost:4200/api ckan -c /etc/ckan/default/ckan.ini datapusher_plus prefect-deploy'").run()?;
+            // Background Prefect worker: activate venv so ckan and datapusher_plus are importable
+            cmd!(
+                sh,
+                "bash -c '. /usr/lib/ckan/default/bin/activate && PREFECT_API_URL=http://localhost:4200/api CKAN_INI=/etc/ckan/default/ckan.ini nohup prefect worker start --pool datapusher-plus > /home/{username}/prefect-worker.log 2>&1 &'"
+            ).run()?;
             println!(
                 "{}",
                 success_text("✅ 8. Installed ckanext-scheming and DataPusher+ extensions.")
@@ -492,7 +538,7 @@ ckanext.datapusher_plus.enable_form_redirect = true
         }
 
         println!("\n{}", success_text("✅ Running CKAN instance..."));
-        cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini run").run()?;
+        cmd!(sh, "bash -c '. /usr/lib/ckan/default/bin/activate && PREFECT_API_URL=http://localhost:4200/api ckan -c /etc/ckan/default/ckan.ini run'").run()?;
     }
 
     Ok(())

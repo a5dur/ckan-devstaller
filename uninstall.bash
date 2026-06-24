@@ -8,13 +8,6 @@ echo "=== CKAN Devstaller Uninstaller ==="
 echo "Removes everything installed by ckan-devstaller."
 echo "Username: $USERNAME"
 echo ""
-read -rp "Proceed? (y/N): " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo "Aborted."
-    exit 0
-fi
-
-echo ""
 
 # ── 1. Stop & remove ckan-compose Docker containers ──────────────────────────
 echo "[1/9] Stopping ckan-compose containers..."
@@ -88,32 +81,24 @@ sudo apt remove -y \
     2>/dev/null || true
 sudo apt autoremove -y 2>/dev/null || true
 
-# ── 9. Docker (optional) ──────────────────────────────────────────────────────
-echo ""
-echo "[9/9] Docker removal"
-echo "  Docker was installed by ckan-devstaller only if it wasn't already present."
-read -rp "  Remove Docker completely? (y/N): " remove_docker
-if [[ "$remove_docker" =~ ^[Yy]$ ]]; then
-    sudo systemctl stop docker 2>/dev/null || true
-    sudo apt remove -y \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-buildx-plugin \
-        docker-compose-plugin \
-        docker-compose \
-        docker.io \
-        2>/dev/null || true
-    sudo apt autoremove -y 2>/dev/null || true
-    sudo rm -rf /var/lib/docker
-    sudo rm -rf /etc/docker
-    sudo rm -f /etc/apt/sources.list.d/docker.list
-    sudo rm -f /etc/apt/keyrings/docker.gpg
-    sudo rm -f /etc/apt/keyrings/docker.asc
-    echo "  Docker removed."
-else
-    echo "  Docker kept."
-fi
+# ── 9. Docker ────────────────────────────────────────────────────────────────
+echo "[9/9] Removing Docker..."
+sudo systemctl stop docker 2>/dev/null || true
+sudo apt remove -y \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin \
+    docker-compose \
+    docker.io \
+    2>/dev/null || true
+sudo apt autoremove -y 2>/dev/null || true
+sudo rm -rf /var/lib/docker
+sudo rm -rf /etc/docker
+sudo rm -f /etc/apt/sources.list.d/docker.list
+sudo rm -f /etc/apt/keyrings/docker.gpg
+sudo rm -f /etc/apt/keyrings/docker.asc
 
 echo ""
 echo "=== Uninstall complete ==="
