@@ -337,7 +337,10 @@ fn main() -> Result<()> {
             let mut conf = ini::Ini::load_from_file("/etc/ckan/default/ckan.ini")?;
             let app_main_section = conf.section_mut(Some("app:main")).unwrap();
             let mut ckan_plugins = app_main_section.get("ckan.plugins").unwrap().to_string();
-            ckan_plugins.push_str(" scheming_datasets");
+            // datapusher_plus MUST precede scheming_datasets: IConfigurer reverse-iteration
+            // gives earlier-listed plugins higher template priority, so DPP form_snippet
+            // overrides (suggestion buttons) only win if it loads before scheming.
+            ckan_plugins.push_str(" datapusher_plus scheming_datasets");
             cmd!(
             sh,
             "ckan config-tool /etc/ckan/default/ckan.ini -s app:main ckan.plugins={ckan_plugins}"
@@ -353,7 +356,17 @@ fn main() -> Result<()> {
             // libgdal-dev libproj-dev libgeos-dev: required for fiona/pyproj/shapely source builds on aarch64
             cmd!(sh, "sudo apt install python3-virtualenv python3-dev python3-pip python3-wheel build-essential libxslt1-dev libxml2-dev zlib1g-dev git libffi-dev libpq-dev uchardet libgdal-dev libproj-dev libgeos-dev -y").run()?;
             sh.change_dir("/usr/lib/ckan/default/src");
-            cmd!(sh, "pip install datapusher-plus@git+https://github.com/dathere/datapusher-plus.git@3.1.0-alpha").run()?;
+            // Editable install from a clone: setup.py declares no package_data, so a non-editable
+            // pip install drops all non-.py files (assets/webassets.yml, templates, public) —
+            // breaking DRUF overrides and suggestion assets. Editable = source tree serves those
+            // files, and ships docker-compose.prefect.yaml + prefect.yaml used below.
+            // main branch dispatches jobs to Prefect (prefect_client), not RQ.
+            cmd!(sh, "sudo rm -rf /usr/lib/ckan/default/src/datapusher-plus").run().ok();
+            cmd!(sh, "git clone -b main https://github.com/a5dur/datapusher-plus.git /usr/lib/ckan/default/src/datapusher-plus").run()?;
+            sh.change_dir("/usr/lib/ckan/default/src/datapusher-plus");
+            cmd!(sh, "pip install -e .").run()?;
+            // Empty install_requires; deps (incl. prefect) live in requirements.txt.
+            cmd!(sh, "pip install -r requirements.txt").run()?;
             sh.change_dir(format!("/home/{username}"));
             cmd!(sh, "wget https://github.com/dathere/qsv/releases/download/20.1.0/qsv-20.1.0-aarch64-unknown-linux-gnu.zip").run()?;
             cmd!(sh, "sudo apt install unzip -y").run()?;
@@ -361,15 +374,7 @@ fn main() -> Result<()> {
             cmd!(sh, "sudo rm -rf qsv-20.1.0-aarch64-unknown-linux-gnu.zip").run()?;
             //cmd!(sh, "sudo mv ./qsvdp_glibc-2.31 /usr/local/bin/qsvdp").run()?;
             cmd!(sh, "sudo mv ./qsvdp /usr/local/bin/qsvdp").run()?;
-            let mut conf = ini::Ini::load_from_file("/etc/ckan/default/ckan.ini")?;
-            let app_main_section = conf.section_mut(Some("app:main")).unwrap();
-            let mut ckan_plugins = app_main_section.get("ckan.plugins").unwrap().to_string();
-            ckan_plugins.push_str(" datapusher_plus");
-            cmd!(
-            sh,
-            "ckan config-tool /etc/ckan/default/ckan.ini -s app:main ckan.plugins={ckan_plugins}"
-        )
-        .run()?;
+            // datapusher_plus already added to ckan.plugins (before scheming_datasets) above.
             // cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main scheming.dataset_schemas=ckanext.datapusher_plus:dataset-druf.yaml").run()?;
             // app_main_section.insert("ckan.plugins", ckan_plugins);
             // app_main_section.insert(
@@ -430,6 +435,7 @@ ckanext.datapusher_plus.file_bin = /usr/bin/file
 ckanext.datapusher_plus.enable_druf = false
 ckanext.datapusher_plus.enable_form_redirect = true
 ckanext.datapusher_plus.prefect_work_pool = datapusher-plus
+ckanext.datapusher_plus.prefect_work_pool_type = process
 ckanext.datapusher_plus.prefect_deployment_name = datapusher-plus/datapusher-plus
 ckanext.datapusher_plus.prefect_ui_base = http://localhost:4200
 ckanext.datapusher_plus.default_locale =
@@ -481,52 +487,49 @@ ckanext.datapusher_plus.decimal_separator =
                 "ckan -c /etc/ckan/default/ckan.ini db upgrade -p datapusher_plus"
             )
             .run()?;
-            // Start Prefect postgres + server only; worker runs on host in CKAN venv (not in Docker,
-            // because the Docker image has no access to /usr/lib/ckan/default or ckan.ini).
-            // Write compose file inline — DPP installed non-editable so no source dir exists.
-            let prefect_compose = r#"services:
-  postgres:
-    image: postgres:14
-    environment:
-      POSTGRES_USER: prefect
-      POSTGRES_PASSWORD: prefect
-      POSTGRES_DB: prefect
-    volumes:
-      - prefect-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prefect"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-  prefect-server:
-    image: prefecthq/prefect:3-latest
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:prefect@postgres:5432/prefect
-      PREFECT_SERVER_API_HOST: 0.0.0.0
-      PREFECT_SERVER_UI_API_URL: http://localhost:4200/api
-    command: prefect server start
-    ports:
-      - "4200:4200"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:4200/api/health', timeout=1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-volumes:
-  prefect-postgres:
-"#;
-            let prefect_compose_path = format!("/home/{username}/docker-compose.prefect.yaml");
-            std::fs::write(&prefect_compose_path, prefect_compose)?;
+
+            // Step 9: dathere sandbox extensions (envvars, spatial@gztr, dathere_theme@sandbox,
+            // ckanext-gztr@sandbox). Mirrors install_extensions.sh so a single install produces
+            // the full sandbox env. gztr sandbox ships the DRUF template overrides.
+            println!("\n{} Installing dathere sandbox extensions...", step_text("9."));
+            sh.change_dir("/usr/lib/ckan/default/src");
+            cmd!(sh, "pip install ckanext-envvars@git+https://github.com/okfn/ckanext-envvars@v0.0.6").run()?;
+            cmd!(sh, "pip install ckanext-spatial@git+https://github.com/dathere/ckanext-spatial.git@gztr").run()?;
+            cmd!(sh, "bash -c 'curl -fsSL https://raw.githubusercontent.com/dathere/ckanext-spatial/gztr/requirements.txt | pip install -r /dev/stdin'").run()?;
+            cmd!(sh, "sudo rm -rf /usr/lib/ckan/default/src/dathere_theme").run().ok();
+            cmd!(sh, "git clone https://github.com/dathere/dathere_theme.git -b sandbox /usr/lib/ckan/default/src/dathere_theme").run()?;
+            cmd!(sh, "pip install -e /usr/lib/ckan/default/src/dathere_theme").run()?;
+            cmd!(sh, "pip install -r /usr/lib/ckan/default/src/dathere_theme/requirements.txt").run()?;
+            cmd!(sh, "sudo rm -rf /usr/lib/ckan/default/src/ckanext-gztr").run().ok();
+            cmd!(sh, "git clone https://github.com/dathere/ckanext-gztr.git -b sandbox /usr/lib/ckan/default/src/ckanext-gztr").run()?;
+            cmd!(sh, "pip install -e /usr/lib/ckan/default/src/ckanext-gztr").run()?;
+            cmd!(sh, "pip install -r /usr/lib/ckan/default/src/ckanext-gztr/requirements.txt").run()?;
+            cmd!(sh, "pip install setuptools==70.0.0").run()?;
+            // Authoritative ckan.plugins. datapusher_plus MUST precede scheming_datasets so DPP's
+            // scheming form_snippet overrides win template priority (IConfigurer reverse iteration,
+            // issue dathere/datapusher-plus#331). No extra_template_paths — it caused RecursionError.
+            let ckan_plugins_full = "ckan.plugins=envvars activity datastore datapusher_plus scheming_datasets spatial_metadata spatial_query dathere_theme dathere_custom_css dathere_custom_homepage dathere_custom_header dathere_custom_footer gztr";
+            cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main {ckan_plugins_full}").run()?;
+            // Point scheming at gztr's dataset schema (carries the DRUF suggestion_formula fields)
+            // and add gztr presets. Without dataset_schemas, scheming has no schema for type
+            // 'dataset', so h.scheming_dataset_schemas() is empty and the DRUF add_dataset snippet
+            // renders zero "Add Dataset" buttons.
+            cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main scheming.dataset_schemas=ckanext.gztr:schemas/dataset.yaml").run()?;
+            let scheming_presets = "scheming.presets=ckanext.scheming:presets.json ckanext.gztr:schemas/presets.yaml";
+            cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main {scheming_presets}").run()?;
+
+            // main-branch DPP dispatches jobs to Prefect (prefect_client.run_deployment), not RQ.
+            // Bring up Prefect postgres + server from the repo's compose file. Skip the compose
+            // worker service — it runs in a bare prefect image with no CKAN, so it can't import
+            // the flow or reach the datastore. Run the worker on the host venv instead.
             sh.change_dir(format!("/home/{username}"));
-            cmd!(sh, "sudo docker-compose -f docker-compose.prefect.yaml up -d postgres prefect-server").run()?;
-            // Wait up to 60s for Prefect server health
+            let dpp_compose = "/usr/lib/ckan/default/src/datapusher-plus/docker-compose.prefect.yaml";
+            cmd!(sh, "sudo docker-compose -f {dpp_compose} up -d postgres prefect-server").run()?;
+            // Wait up to 60s for Prefect server health.
             cmd!(sh, "bash -c 'for i in $(seq 1 12); do curl -sf http://localhost:4200/api/health > /dev/null && break; sleep 5; done'").run()?;
+            // Register the deployment (idempotent), then start a host-side process worker that can
+            // import ckan + datapusher_plus and reach ckan.ini/datastore/qsv.
             cmd!(sh, "bash -c '. /usr/lib/ckan/default/bin/activate && PREFECT_API_URL=http://localhost:4200/api ckan -c /etc/ckan/default/ckan.ini datapusher_plus prefect-deploy'").run()?;
-            // Background Prefect worker: activate venv so ckan and datapusher_plus are importable
             cmd!(
                 sh,
                 "bash -c '. /usr/lib/ckan/default/bin/activate && PREFECT_API_URL=http://localhost:4200/api CKAN_INI=/etc/ckan/default/ckan.ini nohup prefect worker start --pool datapusher-plus > /home/{username}/prefect-worker.log 2>&1 &'"
