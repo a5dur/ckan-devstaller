@@ -24,6 +24,15 @@ struct Args {
     default: bool,
 }
 
+/// Map a user-facing CKAN version to the git ref to install from.
+/// 2.12 has no release tag yet, it only lives on the `dev-v2.12` branch.
+fn ckan_git_ref(version: &str) -> String {
+    match version {
+        "2.12-dev" | "2.12" | "dev-v2.12" => "dev-v2.12".to_string(),
+        v => format!("ckan-{v}"),
+    }
+}
+
 struct Sysadmin {
     username: String,
     password: String,
@@ -60,7 +69,7 @@ fn main() -> Result<()> {
     The default configuration for ckan-devstaller does the following:
     - Install openssh-server to enable SSH access
     - Install ckan-compose (https://github.com/a5dur/ckan-compose) which sets up the CKAN backend (PostgreSQL, SOLR, Redis)
-    - Install CKAN v2.11.3
+    - Install CKAN v2.12 (dev-v2.12 branch, unreleased)
     - Install the DataStore extension
     - Install the ckanext-scheming extension
     - Install the DataPusher+ extension
@@ -113,7 +122,7 @@ fn main() -> Result<()> {
     } else {
         Config {
             ssh: true,
-            ckan_version: "2.11.3".to_string(),
+            ckan_version: "2.12-dev".to_string(),
             sysadmin: default_sysadmin,
             extension_datastore: true,
             extension_ckanext_scheming: true,
@@ -224,37 +233,39 @@ fn main() -> Result<()> {
             step_text("6."),
             config.ckan_version
         );
-        cmd!(sh, "sudo apt install python3-dev libpq-dev python3-pip python3-venv git-core redis-server -y").run()?;
+        // libmagic1: required by python-magic, listed in the CKAN 2.12 source install docs.
+        cmd!(sh, "sudo apt install python3-dev libpq-dev python3-pip python3-venv git-core redis-server libmagic1 -y").run()?;
         cmd!(sh, "sudo rm -rf /usr/lib/ckan").run().ok(); // Remove whatever exists (ok() to ignore if nothing exists)
         cmd!(sh, "sudo mkdir -p /usr/lib/ckan/default").run()?;
         cmd!(sh, "sudo chown {username} /usr/lib/ckan/default").run()?;
         let venv_path = PathBuf::from_str("/usr/lib/ckan/default")?;
         let venv = VirtualEnv::with_path(&sh, &venv_path)?;
         venv.pip_upgrade("pip")?;
+        let ckan_ref = ckan_git_ref(&config.ckan_version);
         venv.pip_install(
-            format!(
-                "ckan[requirements] @ git+https://github.com/ckan/ckan.git@ckan-{}",
-                config.ckan_version
-            )
-            .as_str(),
+            format!("ckan[requirements] @ git+https://github.com/ckan/ckan.git@{ckan_ref}").as_str(),
         )?;
         cmd!(sh, "sudo rm -rf /etc/ckan").run().ok(); // Remove whatever exists
         cmd!(sh, "sudo mkdir -p /etc/ckan/default").run()?;
         cmd!(sh, "sudo chown -R {username} /etc/ckan/").run()?;
+        // Clone the same ref that was pip-installed, so the source tree matches the
+        // installed package (previously this always cloned the default branch).
         cmd!(
             sh,
-            "git clone https://github.com/ckan/ckan.git /usr/lib/ckan/default/src"
+            "git clone -b {ckan_ref} https://github.com/ckan/ckan.git /usr/lib/ckan/default/src"
         )
         .run()?;
         sh.change_dir("/usr/lib/ckan/default/src");
         cmd!(sh, "ckan generate config /etc/ckan/default/ckan.ini").run()?;
-        cmd!(
-            sh,
-            "ln -s /usr/lib/ckan/default/src/ckan/who.ini /etc/ckan/default/who.ini"
-        )
-        .run()?;
+        // repoze.who is long gone and CKAN 2.12 deleted who.ini from the repo entirely.
+        // Only symlink it when the source tree still ships one.
+        let who_ini = "/usr/lib/ckan/default/src/who.ini";
+        if std::fs::exists(who_ini)? {
+            cmd!(sh, "ln -s {who_ini} /etc/ckan/default/who.ini").run()?;
+        }
         sh.change_dir("/usr/lib/ckan/default/src/ckan");
-        venv.pip_install("flask-debugtoolbar==0.14.1")?;
+        // 0.16.0 is what CKAN 2.12 dev-requirements pins; 0.14.1 predates Flask 3.1.
+        venv.pip_install("flask-debugtoolbar==0.16.0")?;
         sh.change_dir("/var/lib");
         cmd!(sh, "sudo mkdir -p ckan/default").run()?;
         cmd!(sh, "sudo chown {username}.{username} ckan/default").run()?;
@@ -517,6 +528,13 @@ ckanext.datapusher_plus.decimal_separator =
             cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main scheming.dataset_schemas=ckanext.gztr:schemas/dataset.yaml").run()?;
             let scheming_presets = "scheming.presets=ckanext.scheming:presets.json ckanext.gztr:schemas/presets.yaml";
             cmd!(sh, "ckan config-tool /etc/ckan/default/ckan.ini -s app:main {scheming_presets}").run()?;
+
+            // Apply migrations for every plugin now enabled. `db init` ran back in step 6, when
+            // ckan.plugins did not yet list activity/tracking/etc, so their alembic branches were
+            // never applied — on CKAN 2.12 that leaves `activity` without the permission_labels
+            // column, and h.new_activities() (called from the theme header for any logged-in user)
+            // aborts the transaction, 500ing every page until the process restarts.
+            cmd!(sh, "ckan -c /etc/ckan/default/ckan.ini db upgrade").run()?;
 
             // main-branch DPP dispatches jobs to Prefect (prefect_client.run_deployment), not RQ.
             // Bring up Prefect postgres + server from the repo's compose file. Skip the compose

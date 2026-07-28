@@ -16,17 +16,17 @@ pub fn question_ssh() -> Result<bool> {
 }
 
 pub fn question_ckan_version() -> Result<String> {
-    let ckan_version_options: Vec<&str> = vec!["2.11.3", "2.10.8", "Other"];
+    let ckan_version_options: Vec<&str> = vec!["2.12-dev", "2.11.5", "2.11.3", "2.10.8", "Other"];
     let answer_ckan_version = Select::new(
         "What CKAN version would you like to install? (optional)",
         ckan_version_options,
     )
-    .with_help_message("We recommend using the latest compatible version of CKAN. Please do not choose 'Other' option unless for testing purposes as the CKAN version may not be supported and may cause a broken installation.")
+    .with_help_message("2.12-dev installs from the unreleased dev-v2.12 branch (SQLAlchemy 2.0, CSRF required in extension forms, files as first-class entities) - extensions may not be compatible yet. Please do not choose 'Other' option unless for testing purposes as the CKAN version may not be supported and may cause a broken installation.")
     .prompt()?;
     if answer_ckan_version == "Other" {
         Ok(
             Text::new("What CKAN version would you like to install? (optional)")
-                .with_default("2.11.3")
+                .with_default("2.12-dev")
                 .prompt()?,
         )
     } else {
